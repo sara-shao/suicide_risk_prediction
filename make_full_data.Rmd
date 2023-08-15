@@ -1,0 +1,132 @@
+---
+title: "Make Full Dataframe"
+author: "Sara Shao"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r load-data}
+risk <- read_csv('suicide_risk.csv')
+predictors <- read_csv('predictors.csv')
+```
+
+### Make Full Dataset
+
+```{r}
+# join predictors and suicide risk
+full_df <- full_join(predictors, risk, by = c('src_subject_id', 'eventname')) %>%
+  arrange(src_subject_id, eventname)
+```
+
+```{r}
+# convert values representing NA or outlier values to NA
+# recode gender where 1 is male, 2 is nonbinary/other, 3 is female
+
+full_df <- full_df %>% 
+  mutate_all(function(x) ifelse(is.double(x) & (x > 500 | x < 0), NA, x)) %>%
+  mutate(kbi_gender = case_when(kbi_gender == 2 ~ 3,
+                                kbi_gender == 3 ~ 2,
+                                TRUE ~ kbi_gender))
+
+full_df$kbi_y_sex_orient[full_df$kbi_y_sex_orient > 3] = NA
+full_df$kbi_y_trans_id[full_df$kbi_y_trans_id > 3] = NA
+```
+
+```{r}
+full_df
+```
+
+```{r}
+# save as csv
+write_csv(full_df, 'final_data_all_subj_times.csv')
+```
+
+
+### Recast Variables
+
+```{r}
+# group data across visits so there's only one row per subject
+# summarize the mean scores for each variable
+# round gender variables to a whole number
+df <- full_df %>%
+  select(-eventname, -kbi_repeat_grade_pst_yr) %>%
+  group_by(src_subject_id) %>%
+  summarize_all(mean, na.rm = TRUE) %>%
+  mutate_all(function(x) ifelse(is.nan(x), NA, x)) %>%
+  mutate(kbi_sex_assigned_at_birth = round(kbi_sex_assigned_at_birth) - 1, kbi_gender = round(kbi_gender))
+
+# list of columns that have binary variables
+to_logical = c('cybb_phenx_harm', 'kbi_y_grade_repeat', 'kbi_y_drop_in_grades', 'kbi_y_det_susp', 'ksads_bully_raw_26', 'kbi_sex_assigned_at_birth', 'si', 'sa')
+
+# recast binary variables from numeric to logical
+df[to_logical] <- lapply(df[to_logical], FUN = function(x) as.factor(as.logical(x)))
+```
+
+### Filter Missing
+
+```{r}
+# get proportion of missing for each column
+miss_prop <- colMeans(is.na(df))
+miss_prop_tbl <- data.frame(miss_prop)
+```
+
+```{r}
+# display column missingness table
+miss_prop_tbl
+```
+
+```{r}
+# convert problems related to sexual orientation or transgender identity answer to no if it's NA
+df$kbi_y_sex_orient_probs[is.na(df$kbi_y_sex_orient_probs)] <- 1
+df$kbi_y_trans_prob[is.na(df$kbi_y_trans_prob)] <- 1
+```
+
+```{r filter-missing-rows-and-cols}
+# filter out teacher reports due to missingness
+df <- df %>%
+  select(-contains('bpm_t_'))
+
+# calculate proportion of missing for each row
+miss_rows <- rowMeans(is.na(df))
+df$miss_rows = miss_rows
+
+# filter out rows with more than 15% missingness
+df <- df %>% 
+  filter(miss_rows < 0.15) %>%
+  select(-miss_rows)
+```
+
+```{r}
+# recalculate column missingness to make sure no column has more than 15% of values missing
+miss_prop <- colMeans(is.na(df))
+miss_prop_tbl <- data.frame(miss_prop)
+```
+
+```{r}
+miss_prop_tbl
+```
+
+```{r}
+# remove repetitive columns
+df <- df %>%
+  select(-contains(c('mean','_t')), -ends_with(c('surgency_ss','bis_sum', 'bas_rr', 'bas_drive')))
+```
+
+```{r}
+df
+```
+
+
+```{r}
+# save as csv
+write.csv(df, "final_data_all_subj.csv", row.names = FALSE)
+```
+

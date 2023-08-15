@@ -1,0 +1,253 @@
+---
+title: "Make X"
+author: "Sara Shao"
+date: "`r Sys.Date()`"
+output: html_document
+---
+ 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+### ERQ
+
+```{r}
+y_erq = read_csv("mental-health/mh_y_erq.csv")
+```
+
+```{r}
+y_erq <- y_erq %>%
+  mutate(erq_suppression = rowSums(across(c(erq_feelings_control, erq_feelings_hide, erq_feelings_self))),
+         erq_reappraisal = rowSums(across(c(erq_feelings_happy, erq_feelings_less_bad, erq_feelings_think)))) %>%
+  select(src_subject_id, eventname, erq_suppression, erq_reappraisal)
+```
+
+### UPPS
+
+```{r}
+y_upps <- read_csv("mental-health/mh_y_upps.csv")
+```
+
+```{r}
+y_upps <- y_upps %>%
+  select(src_subject_id, eventname, upps_y_ss_negative_urgency, upps_y_ss_lack_of_perseverance, upps_y_ss_lack_of_planning, upps_y_ss_sensation_seeking, upps_y_ss_positive_urgency)
+```
+
+### PPS
+
+```{r}
+y_pps <- read_csv("mental-health/mh_y_pps.csv")
+```
+
+```{r}
+y_pps <- y_pps %>%
+  select(src_subject_id, eventname, contains('_ss_')) %>%
+  mutate(pps_y_ss_number = case_when(pps_y_ss_number_nm / pps_y_ss_number_nt > 0.15 ~ NA, TRUE ~ pps_y_ss_number)) %>%
+  select(src_subject_id, eventname, pps_y_ss_number)
+```
+
+
+### BISBAS
+
+```{r}
+y_bisbas <- read_csv("mental-health/mh_y_bisbas.csv")
+```
+
+```{r}
+y_bisbas <- y_bisbas %>%
+  select(src_subject_id, eventname, bis_y_ss_bis_sum, bis_y_ss_bas_rr, bis_y_ss_bas_drive, bis_y_ss_bas_fs, bis_y_ss_bism_sum, bis_y_ss_basm_rr, bis_y_ss_basm_drive)
+```
+
+### EATQ
+
+```{r}
+p_eatq <- read_csv("mental-health/mh_p_eatq.csv")
+```
+
+```{r}
+p_eatq <- p_eatq %>%
+  select(src_subject_id, eventname, contains('_ss_')) %>%
+  filter(! is.na(eatq_p_ss_aggression_nm))%>%
+  select(! contains('_nm')) %>%
+  select(! contains('_nt')) %>%
+  select(! contains('gish')) 
+```
+
+# T BPM
+
+```{r}
+t_bpm <- read_csv("mental-health/mh_t_bpm.csv")
+```
+
+```{r}
+t_bpm <- t_bpm %>%
+  select(src_subject_id, eventname, contains(c('_ss_', '_scr_'))) %>%
+  select(! contains('_nm')) %>%
+  select(! contains('_nt'))
+```
+
+### Y BPM
+
+```{r}
+y_bpm <- read_csv("mental-health/mh_y_bpm.csv")
+```
+
+```{r}
+y_bpm <- y_bpm %>%
+  select(src_subject_id, eventname, contains(c('_ss_', '_scr_'))) %>%
+  select(! contains('_nm')) %>%
+  select(! contains('_nt'))
+```
+
+### CBB
+
+```{r}
+y_cbb <- read_csv("mental-health/mh_y_cbb.csv")
+```
+
+```{r}
+y_cbb <- y_cbb %>%
+  select(src_subject_id, eventname, cybb_phenx_harm)
+```
+
+### KSADS BG
+
+```{r}
+y_ksads_bg <- read_csv("mental-health/mh_y_ksads_bg.csv")
+```
+
+```{r}
+y_ksads_bg <- y_ksads_bg %>%
+  select(src_subject_id, eventname, kbi_y_grade_repeat, kbi_y_drop_in_grades, kbi_y_det_susp, kbi_y_sex_orient, kbi_y_sex_orient_probs, kbi_y_trans_id, kbi_y_trans_prob, ksads_bully_raw_26, kbi_repeat_grade_pst_yr, kbi_sex_assigned_at_birth, kbi_gender)
+```
+
+### OR
+
+```{r}
+y_or <- read_csv("mental-health/mh_y_or.csv")
+```
+
+```{r}
+y_or <- y_or %>%
+  select(src_subject_id, eventname, resiliency5b_y, resiliency6b_y) %>%
+  mutate(close_friends = rowSums(across(resiliency5b_y:resiliency6b_y))) %>%
+  select(-resiliency5b_y, -resiliency6b_y)
+```
+
+### PEQ
+
+```{r}
+y_peq <- read_csv("mental-health/mh_y_peq.csv")
+```
+
+```{r}
+y_peq <- y_peq %>%
+  select(src_subject_id, eventname, contains('_ss_')) %>%
+  select(! contains('_nm')) %>%
+  select(! contains('_nt'))
+```
+
+### POA
+
+```{r}
+y_poa <- read_csv("mental-health/mh_y_poa.csv")
+```
+
+```{r}
+y_poa <- y_poa %>%
+  select(src_subject_id, eventname, poa_y_ss_sum)
+```
+
+### DERS
+
+```{r}
+p_ders <- read_csv("mental-health/mh_p_ders.csv")
+```
+
+```{r}
+p_ders <- p_ders %>%
+  select(-ders_p_select_language___1)
+```
+
+```{r}
+rev_items = c(
+  'ders_attn_awareness_p',
+  'ders_clear_feelings_p',
+  'ders_feelings_attentive_p', 
+  'ders_feelings_care_p',
+  'ders_feelings_know_p',
+  'ders_upset_ack_p',
+  'ders_upset_behavior_control_p',
+  'ders_upset_better_p'
+)
+
+p_ders[rev_items] <- lapply(p_ders[rev_items], FUN = function(x) -x + 6)
+```
+
+```{r}
+p_ders <- p_ders %>%
+  mutate(
+    engage = rowSums(across(c(
+      ders_upset_concentrate_p,
+      ders_upset_difficulty_p,
+      ders_upset_fixation_p,
+      ders_upset_focus_p))),
+    lack_awareness = rowSums(across(c(
+      ders_attn_awareness_p,
+      ders_feelings_attentive_p,
+      ders_feelings_care_p,
+      ders_upset_ack_p))),
+    lack_control = rowSums(across(c(
+      ders_emotion_overwhelm_p,
+      ders_upset_behavior_control_p,
+      ders_upset_behavior_p,
+      ders_upset_control_p,
+      ders_upset_lose_control_p,
+      ders_upset_out_control_p))),
+    lack_clarity = rowSums(across(c(
+      ders_clear_feelings_p,
+      ders_feelings_know_p))),
+    nonacceptance = rowSums(across(c(
+      ders_upset_angry_p,
+      ders_upset_ashamed_p,
+      ders_upset_embarrassed_p,
+      ders_upset_guilty_p,
+      ders_upset_irritation_p,
+      ders_upset_weak_p))),
+    limited_access = rowSums(across(c(
+      ders_upset_better_p,
+      ders_upset_depressed_p,
+      ders_upset_emotion_overwhelm_p,
+      ders_upset_esteem_p,
+      ders_upset_feel_better_p,
+      ders_upset_long_time_better_p,
+      ders_upset_time_p)))
+  )
+
+```
+
+```{r}
+p_ders <- p_ders %>%
+  select(-contains('_p'))
+```
+
+
+### Merge Tables
+
+```{r}
+list_df = list(p_ders, p_eatq, t_bpm, y_bisbas, y_bpm, y_cbb, y_erq, y_ksads_bg, y_or, y_peq, y_poa, y_pps, y_upps)
+predictors <- list_df %>% reduce(full_join, by=c('src_subject_id', 'eventname'))
+```
+
+```{r}
+head(predictors)
+```
+
+```{r}
+write.csv(predictors, "predictors.csv", row.names = FALSE)
+```
+

@@ -1,0 +1,149 @@
+---
+title: "Make Y"
+author: "Sara Shao"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+## Clean parent report
+
+```{r}
+parent_si <- read_csv("mental-health/mh_p_ksads_si.csv")
+```
+
+```{r}
+head(parent_si)
+```
+
+```{r}
+# relevant columns for SI and SA (see ABCD data dictionary)
+si_q <- as.character(c(1112, 1115, 1124, 824, 828, 830, 832, 1105))
+sa_q <- as.character(c(1112, 1115, 1124, 830, 832, 1105))
+```
+
+```{r}
+# select relevant columns
+parent_si2 <- parent_si %>%
+  select(src_subject_id, eventname, contains(si_q))
+
+# fill NA with 0
+parent_si2[is.na(parent_si2)] = 0
+```
+
+```{r}
+# mutate 2 (answered no) to be 0
+# sum each row across relevant columns
+# if row sum greater than 0, it's a 1, otherwise 0
+
+parent_si3 <- parent_si2 %>%
+  mutate(ksads_suicidal_raw_1112_p = 
+           case_when(ksads_suicidal_raw_1112_p == 2 ~ 0, 
+                     TRUE ~ ksads_suicidal_raw_1112_p),
+         ksads_suicidal_raw_1124_p = 
+           case_when(ksads_suicidal_raw_1124_p == 2 ~ 0, 
+                     TRUE ~ ksads_suicidal_raw_1124_p)) %>%
+  mutate(si = as.numeric(as.logical(rowSums(across(contains(si_q)))))) %>%
+  mutate(sa = as.numeric(as.logical(rowSums(across(contains(sa_q))))))
+```
+
+```{r}
+# select subject ID, eventname, SI, and SA columns
+parent_si4 <- parent_si3 %>%
+  select(src_subject_id, eventname, si, sa)
+```
+
+```{r}
+parent_si4 %>%
+  filter(si==1) %>%
+  filter(sa==1)
+```
+
+## Repeat process for youth report:
+
+```{r}
+youth_si <- read_csv("mental-health/mh_y_ksads_si.csv")
+```
+
+```{r}
+youth_si2 <- youth_si %>%
+  select(src_subject_id, eventname, contains(si_q))
+
+youth_si2[is.na(youth_si2)] = 0
+```
+
+```{r}
+youth_si3 <- youth_si2 %>%
+  mutate(ksads_suicidal_raw_1112_t = 
+           case_when(ksads_suicidal_raw_1112_t == 2 ~ 0, 
+                     TRUE ~ ksads_suicidal_raw_1112_t),
+         ksads_suicidal_raw_1124_t = 
+           case_when(ksads_suicidal_raw_1124_t == 2 ~ 0, 
+                     TRUE ~ ksads_suicidal_raw_1124_t)) %>%
+  mutate(si = as.numeric(as.logical(rowSums(across(contains(si_q)))))) %>%
+  mutate(sa = as.numeric(as.logical(rowSums(across(contains(sa_q))))))
+```
+
+```{r}
+youth_si4 <- youth_si3 %>%
+  select(src_subject_id, eventname, si, sa)
+```
+
+```{r}
+youth_si4
+```
+
+## Combine parent and youth report
+
+```{r}
+# combine parent and youth report
+# group by subject id and calculate sum of youth and parent report
+# if sum greater than 0, it's a 1, otherwise 0
+
+suicide_risk <- rbind(youth_si4, parent_si4) %>%
+  group_by(src_subject_id, eventname) %>%
+  summarize(si = sum(si), sa = sum(sa)) %>%
+  mutate(si = as.numeric(as.logical(si)),
+         sa = as.numeric(as.logical(sa)))
+```
+
+```{r}
+suicide_risk
+```
+
+
+```{r}
+# save as csv
+write.csv(suicide_risk, "suicide_risk.csv", row.names = FALSE)
+```
+
+## Distinguish suicide risk by parent or youth report
+
+```{r}
+# rename SI and SA columns
+youth_si5 <- youth_si4 %>%
+  rename(si_youth = si, sa_youth = sa)
+```
+
+```{r}
+# rename SI and SA columns
+parent_si5 <- parent_si4 %>%
+  rename(si_parent = si, sa_parent = sa)
+```
+
+```{r}
+# join tables
+suicide_risk2 <- full_join(youth_si5, parent_si5, by = c('src_subject_id', 'eventname'))
+```
+
+```{r}
+write.csv(suicide_risk2, "suicide_risk2.csv", row.names = FALSE)
+```
+

@@ -1,0 +1,603 @@
+---
+title: "Suicide Risk Model"
+author: "Sara Shao"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 
+---
+
+### Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r load-packages}
+library(tidyverse) # basics
+library(tictoc) # time tracking
+library(caret) # cross-validation / model fitting
+library(missForest) # random forest imputation
+library(pROC) # roc / auc
+library(Boruta) # variable selection
+library(cutpointr) # decide probability cutoffs
+
+library(kernlab) # support vector machines
+library(randomForest) # random forest
+library(gbm) # gradient-boosted model
+library(glmnet) # elastic net
+```
+
+### Load Full Dataset
+
+The full dataset contains 50 predictor variables consisting of various subscores from ABCD mental health questionnaires. KSADS questionnaires were not included as predictors. There are two outcome variables, suicidal ideation (SI) and suicidal action (SA). SI is TRUE if either the child or parent answered yes to any of the questions 824, 828, 830, 832, 1105, 1112, 1115, 1124 on the KSADS SI questionnaire (See [ABCD data dictionary](https://data-dict.abcdstudy.org/) for the ksads_si table). SA is TRUE if the child or parent answered yes to 830, 832, 1105, 1112, 1115, 1124 on the KSADS SI questionnaire.
+
+When a csv file is imported, it does not assign features as a factor data type (which are basically categorical variables). Therefore we need to convert appropriate columns into factor data types ourselves. This is especially important for the outcome variables as some model functions expect the outcome to be a factor for classification. Categorical variables **do not** need to be recoded into dummy variables. 
+
+```{r load-data}
+df <- read_csv('final_data_all_subj.csv')
+# convert logical to factor
+df <- df %>%
+  mutate(across(where(is.logical), function (x) as.factor(as.numeric(x))))%>%
+  mutate(kbi_gender = as.factor(kbi_gender))
+head(df)
+```
+
+### Train-Test Split
+
+Split the data into a training set and test set. The training set will be used to train the prediction models on, and the test set will used to assess the effectiveness of the model. In this case, the train-test split will be roughly 75-25 and each row will be randomly assigned to one set or the other.
+
+```{r split-data}
+set.seed(1)
+
+# use 75% of dataset as training set and 25% as test set
+sample <- sample(c(TRUE, FALSE), nrow(df), replace=TRUE, prob=c(0.75,0.25))
+train_unimputed <- df[sample, ]
+test_unimputed <- df[!sample, ]
+```
+
+### Data Imputation
+
+Next, we impute the training set using a random forest.
+
+**What is a random forest?** A random forest is a type of decision tree algorithm for prediction. This algorithm fits a "tree" to the data using a different predictor at each split in the tree. The algorithm will automatically select the best cut points for each predictor. The downside of a regular decision tree is it is very dependent on the training data. This is where the random forest comes in. In a random forest, instead of considering all of the predictors at each split in the tree, it will only consider a random subset of predictors. The optimal subset size $\sqrt{p}$ where $p$ is the total number of predictors. This will reduce the model variance and make it more robust.
+
+To impute the missing values in the data, a tree is fit to each variable using all the other variables as predictors. The predictions made by the tree are used to fill in the missing values.
+
+```{r impute-train-pred, eval=FALSE}
+# ~ 7 min
+tic()
+# get just predictor columns
+miss_X <- train_unimputed %>%
+  select(-src_subject_id, -si, -sa)
+copy <- data.frame(miss_X) 
+
+# impute training set predictors
+doParallel::registerDoParallel(cores = 6)
+doRNG::registerDoRNG(seed = 123)
+imp_df <- missForest(copy, verbose = FALSE, parallelize = 'forests')$ximp
+
+# add si and sa back to dataframe
+imp_df_full <- imp_df %>%
+  mutate(si = train_unimputed$si,
+         sa = train_unimputed$sa,
+         src_subject_id = train_unimputed$src_subject_id)
+toc()
+```
+
+```{r save-train-test, eval=FALSE}
+# save training and test set as csvs
+write.csv(imp_df_full, "train_imputed.csv", row.names = FALSE)
+write.csv(test_unimputed, "test_unimputed.csv", row.names = FALSE)
+```
+
+### Clean Train Data
+
+```{r load-train}
+train <- read_csv('train_imputed.csv')
+```
+
+```{r}
+# convert numeric to factor
+to_factor = c('cybb_phenx_harm', 'kbi_y_grade_repeat', 'kbi_y_drop_in_grades', 'kbi_y_det_susp', 'ksads_bully_raw_26','kbi_gender', 'kbi_sex_assigned_at_birth', 'si', 'sa')
+
+train[to_factor] <- lapply(train[to_factor], FUN = function(x) as.factor(x))
+```
+
+```{r}
+# count rows by SI
+train %>%
+  count(si)
+```
+
+Since we have an unbalanced data set with a roughly 4:1 ratio of control vs. SI, we're going to create 4 balanced sets of training data where the SI subjects are kept the same but the control subjects are different.
+
+```{r}
+# separate controls from SI
+controls <- train %>%
+  filter(si == '0')
+SIs <- train %>%
+  filter(si == '1')
+```
+
+```{r}
+# randomly sample controls into 4 groups
+set.seed(123)
+sample <- sample(c(1,2,3,4), nrow(controls), replace=TRUE, prob=c(0.25, 0.25, 0.25, 0.25))
+```
+
+```{r}
+# combine each set of controls with the SI subjects
+set1 <- rbind(controls[sample == 1, ], SIs)
+set2 <- rbind(controls[sample == 2, ], SIs)
+set3 <- rbind(controls[sample == 3, ], SIs)
+set4 <- rbind(controls[sample == 4, ], SIs)
+```
+
+### Create Function
+
+Next we create a function that will tune and train the specified ML model using the training set and SI as the response variable. The possible options are random forest ('rf'), logistic regression ('logreg'), elastic net ('elnet'), gradient boosted tree ('gbm'), k-nearest neighbors ('knn'), or support vector machine ('svmLinear', 'svmPoly', 'svmRadial'). Below is a brief description of each model algorithm.
+
+**Random Forest:** (skip if you read Data Imputation section above) The random forest is a type of decision tree algorithm for prediction. This algorithm fits a "tree" to the data using a different predictor at each split in the tree. The algorithm will automatically select the best cut points for each predictor. The downside of a regular decision tree is it is very dependent on the training data. This is where the random forest comes in. In a random forest, instead of considering all of the predictors at each split in the tree, it will only consider a random subset of predictors. The optimal subset size $\sqrt{p}$ where $p$ is the total number of predictors.This will reduce the model variance, making it more robust.
+
+**Logistic Regression:** The logistic regression model is given by the equation $$\ln(\frac{p}{1-p}) = X\beta$$ where $\beta$ represents the coefficients estimated by the model to represent how the probability of the outcome $p$ changes with different predictor values. This model is a type of generalized linear model assumes a linear relationship between the model coefficients and the log odds. To prevent overfitting, we typically use some sort of variable selection process to prevent overfitting. Here we use the `step()` function which by default performs backwards selection using AIC as the model fit metric. When there are correlated predictors it becomes harder to pick out which predictors are important and model variance may be high. 
+
+**Elastic Net:** The elastic net is a combination of ridge regression and LASSO. Both ridge regression and LASSO work by biasing coefficients toward 0 to reduce the variance of the model. Ridge and lasso each have one parameter to decide how much to shrink the coefficents. The constraint equations used in each method are different, making it so that LASSO can perform variable selection but ridge regression cannot. However, ridge regression works better when there are highly correlated predictor variables. The elastic net combines the constraint equations of the two methods and therefore has two parameters, one to control the degree of LASSO shrinkage and the other to control ridge shrinkage. The purpose of this method is to find a balance between the limitations of each method on its own.
+
+**Gradient Boosted Trees:** This is another type of tree algorithm where after the initial tree is fit, smaller trees are then fit to the residuals. Then, the residuals are updated and the process continues. This model has 4 different parameters: number of trees, interaction depth, learning rate, and minimum sample size in a node to allow a split. In the package we are using, `caret`, the minimum sample size and learning rate are held constant by default.
+
+**K-Nearest Neighbors:** This is one of the more basic machine learning algorithms. In order to predict the outcome of a new data point, the algorithm first picks out the K points in the training set that have the shortest "distance" to the new point, i.e. are most similar in terms of their features. The predictors need to be standardized first so the distance is not biased. The outcomes of these "neighboring" points are then used to decide what the new point should be classified as. For example, in a balanced dataset, if K=5 and 3 of the most similar subjects have SI while 2 of them don't, the new subject will be classified as having SI.
+
+**Support Vector Machines:** If a support vector machine (SVM) has a linear kernel, it will try to fit a high-dimensional plane to the training data to try and separate the points into their outcome classes. A plane that is a perfect classifier of the training data is called a separating hyperplane. However, this often doesn't exist, and when there are misclassified points, those points are called support vectors. A cost parameter controls how many support vectors are allowed to prevent under or overfitting. An SVM can also have a polynomial or radial kernel, where the basic idea is the same except the shape of the dividing surface is different. When the kernel is nonlinear, there are additional parameters to be specified, for example the degree of the of polynomial or the radius of the radial kernel.
+
+**What is tuning?** For most model parameters, there is no best value to set it at across the board. Usually, it's hard to know which parameter values are best without fitting and testing out the model. The process by which the best parameter values are found is called tuning. One commonly-used tuning method is **k-fold cross validation (CV)**. To perform k-fold CV, the training data is split into k equal sets, called folds. The model is fit k times, where a different fold is chosen each time to be the holdout set. The combined folds that are not chosen make up the new training set. The performance of the models on their holdout set is averaged to estimate what the real performance of the model would be. The estimated performance metric is then compared across different combinations of parameter values to choose the best one. Since it would not be feasible to test every possible parameter value, a grid of search values is usually used instead. In the `caret` package, you can specify a custom grid (`tuneGrid`) or you can specify how many values to test for each parameter and the values will be generated automatically (`tuneLength`). After the model is tuned, the output of the `train` function is a model fit on all the training data using the optimal parameter values that were found.
+
+```{r create-func}
+# tune and fit model based on specified model type and dataset
+fit_model <- function(df, model_type) {
+  
+  set.seed(123)
+  df = df %>% select(-src_subject_id, -sa)
+  train.control <- trainControl(method = "cv", number = 10) # CV with 10 folds
+  
+  if (model_type == 'rf') {
+    model <- randomForest(si ~ ., data = df, ntree = 1000, importance = TRUE)
+  }
+  
+  if (model_type == 'logreg') {
+    all <- glm(si ~ ., data = df, family = 'binomial')
+    model <- step(all, trace=0) # backwards selection wtih AIC
+  }
+  
+  if (model_type == 'elnet') {
+    model <- train(si ~., data = df, method = "glmnet",
+                  tuneLength = 6,
+                  trControl = train.control,
+                  metric = "Accuracy")
+  }
+  
+  if (model_type == 'gbm') {
+    df2 <- df %>% mutate(si = as.character(si))
+    
+    cv <- train(si ~., data = df, method = "gbm",
+               tuneLength = 6,
+               trControl = train.control,
+               metric = "Accuracy",
+               verbose = FALSE)
+    
+    n_trees <- cv$bestTune[,1]
+    int_depth <- cv$bestTune[,2]
+    
+    # fitting our own model so it stores variable importance info
+    model <- gbm(si ~ ., distribution = "bernoulli", 
+                    data = df2, n.trees = n_trees,
+                    interaction.depth = int_depth)
+  }
+  
+  if(model_type == 'knn') {
+    # predictor variables need to be standardized first
+    df_scale <- df %>% 
+      mutate(across(where(is.numeric), function (x) scale(x)))
+    
+    model <- train(si ~., data = df_scale, method = "knn",
+               tuneLength = 6,
+               trControl = train.control,
+               metric = "Accuracy")
+  }
+  
+  if (model_type == 'svmLinear') {
+    costGrid <- expand.grid(C = c(0.001, 0.01, 0.1, 1, 5, 10))
+    
+    model <- train(si ~., data = df, method = "svmLinear",
+               tuneGrid = costGrid,
+               trControl = train.control,
+               metric = "Accuracy")
+  }
+  
+  if (model_type == 'svmPoly') {
+    polyGrid <-  expand.grid(degree = c(2,3,4,5), 
+                             scale = c(0.001, 0.01, 1/ncol(df), 0.1), 
+                             C = c(0.001, 0.01, 0.1, 1))
+    
+    model <- train(si ~., data = df, method = "svmPoly",
+               tuneGrid = polyGrid,
+               trControl = train.control,
+               metric = "Accuracy")
+  }
+  
+  if(model_type == 'svmRadial') {
+    model <- train(si ~., data = df, method = "svmRadial",
+               tuneLength = 6,
+               trControl = train.control,
+               metric = "Accuracy")
+  }
+  
+  return (model)
+}
+```
+
+### Fit Models
+
+After we've created the function, we now fit all of the models to each of the training sets.
+
+```{r}
+model_types = c('rf', 'logreg', 'elnet', 'gbm', 'knn', 'svmLinear', 'svmPoly', 'svmRadial')
+
+datasets = list(set1, set2, set3, set4)
+```
+
+```{r fit-models, eval=FALSE}
+# ~ 45 min
+tic()
+
+for (i in 1:4) {
+  for (mod_type in model_types) {
+    model <- fit_model(datasets[[i]], mod_type)
+  
+    # save model as RDS object
+    filename = paste0("models/", mod_type, "_", as.character(i))
+    saveRDS(model, filename)
+  }
+}
+
+toc()
+```
+
+### Variable Importance
+
+#### Boruta Features
+
+The following code performs Boruta feature selection on each of the 4 training sets and then fits every model again on the paired down training sets. When the models are saved, they are distinguished from previous models with "Boruta" after the model name, e.g. "rfBoruta_1".
+
+**What is Boruta feature selection?** The Boruta algorithm first creates multiple copies of each predictor variable where the values in each copy are shuffled. These randomized versions of the predictor variables are called "shadow variables." Then a random forest is fit with all the original and shadow variables to predict the outcome variable. A variable importance metric is calculated for every variable, and if original, un-shuffled variable cannot outperform the best-performing shadow variable, it is filtered out. This process is repeated until all the variables are confirmed to be important or unimportant, or until the limit of random forest runs is reached. If there are tentative variables left over, the `TentativeRoughFix()` function will compare the median Z-score of the original attribute to the median Z-score of the best shadow attribute and make a final decision.
+
+```{r fit-boruta, eval=FALSE}
+# ~ 35 min
+tic()
+
+model_types = c('rf', 'logreg', 'elnet', 'gbm', 'knn', 'svmLinear', 'svmPoly', 'svmRadial')
+
+for (i in 1:4) {
+  
+  set.seed(123)
+  
+  # run Boruta algorithm (~ 10 min)
+  df <- datasets[[i]] %>% select(-src_subject_id, -sa)
+  boruta.train <- Boruta(si ~ ., data = df, doTrace = 0)
+  filename = paste0("boruta/", "boruta", "_", as.character(i))
+  saveRDS(boruta.train, filename)
+  
+  # load Boruta output
+  filename = paste0("boruta/", "boruta", "_", as.character(i))
+  boruta.train <- readRDS(filename)
+
+  # make a decision on tentative variables
+  final.boruta <- TentativeRoughFix(boruta.train)
+  boruta_imp <- getSelectedAttributes(final.boruta, withTentative = F)
+  
+  # save list of selected variables
+  filename = paste0("boruta/", "boruta_feat", "_", as.character(i))
+  saveRDS(boruta_imp, filename)
+  
+  # make train set with only selected variables 
+  df <- datasets[[i]] %>%
+    select(boruta_imp, si, sa, src_subject_id)
+  
+  # fit another set of models using this train set
+  for (mod_type in model_types) {
+    model <- fit_model(df, mod_type)
+    
+    filename = paste0("models/", mod_type, "Boruta_", as.character(i))
+    saveRDS(model, filename)
+  }
+}
+
+toc()
+```
+
+Below we combine the Boruta variables from each training set and count how many sets each variable appeared in:
+
+```{r}
+boruta_vars <- c()
+
+# make list of boruta variables from every set
+for (i in 1:4) {
+  filename = paste0('boruta/boruta_feat_', as.character(i))
+  temp <- readRDS(filename)
+  boruta_vars <- c(boruta_vars, temp)
+}
+boruta_vars <- data.frame(boruta_vars)
+
+# count
+boruta_vars %>%
+  count(boruta_vars) %>%
+  arrange(desc(n))
+```
+
+From the above table we can see that there are 38 variables that were classified as important in at least one training set, meaning 12 of the original variables can be ruled out as unimportant. There were 30 variables deemed important across all 4 sets.
+
+#### Random Forest
+
+Let's look at the variable importance for the 4 random forests fit on the Boruta variables. 
+
+```{r}
+var_imp_all = data.frame(matrix(nrow = 0, ncol = 2))
+
+# pull variable importance information from models into one table
+for (i in 1:4) {
+  filename = paste0('models/rfBoruta_', as.character(i))
+  rf <- readRDS(filename)
+  var_imp <- varImp(rf) %>%
+    select(-`0`) %>%
+    rownames_to_column('var_name')
+  
+  var_imp_all = rbind(var_imp_all, var_imp)
+}
+
+# compute average importance and SD for every variable
+var_imp_summary = var_imp_all %>%
+  group_by(var_name) %>%
+  summarize(avg_importance = mean(`1`), sd = sd(`1`)) %>%
+  arrange(desc(avg_importance))
+```
+
+```{r}
+# take only the 15 most important variables
+top_vars = var_imp_summary %>%
+  head(15)
+```
+
+```{r plot-rf-imp}
+# create a bar graph with confidence bands
+ggplot(data = top_vars, mapping = aes(
+  x = avg_importance, y = fct_reorder(var_name, avg_importance), 
+  fill = fct_reorder(var_name, avg_importance)
+  )) +
+  geom_col(show.legend = FALSE) +
+  geom_errorbarh(aes(
+    xmin = avg_importance - 2*sd, xmax = avg_importance + 2*sd, height = 0.3)
+    ) +
+  labs(x = 'Average Importance', y = 'Variable Name')
+```
+
+We can see from the plot above that the BPM internalizing subscore, the prodromal symptoms score, and the EATQ negative affect subscore appear to be the most important overall for classifying a subject as having SI.
+
+### Clean Test Set
+
+Before we look at how our models perform, we first need to load and clean the test set. 
+
+```{r load-test}
+test <- read_csv("test_unimputed.csv")
+```
+
+```{r}
+# convert numeric to factor
+to_factor = c('cybb_phenx_harm', 'kbi_y_grade_repeat', 'kbi_y_drop_in_grades', 'kbi_y_det_susp', 'ksads_bully_raw_26','kbi_gender', 'kbi_sex_assigned_at_birth', 'si', 'sa')
+
+test[to_factor] <- lapply(test[to_factor], FUN = function(x) as.factor(x))
+```
+
+Our test set has not been imputed yet as before we had imputed only the training set. Below, we impute the test set separately.
+
+```{r}
+# prepare for imputing
+miss_X <- test %>%
+  select(-src_subject_id, -si, -sa)
+
+copy <- data.frame(miss_X) 
+```
+
+```{r impute-test}
+# ~ 1 min
+# impute test set
+doParallel::registerDoParallel(cores = 6)
+doRNG::registerDoRNG(seed = 123)
+imp_df <- missForest(copy, verbose = FALSE, parallelize = 'forests')$ximp
+```
+
+```{r}
+# add outcome variables back
+test <- imp_df %>%
+  mutate(sub_id = test$src_subject_id, si = test$si, sa = test$sa)
+```
+
+### Make Predictions
+
+Next, we make a table of predictions where the first two columns are the true outcome variables, SI and SA, and each of the other columns is the predicted outcomes from that model type. The last column indicates which fold (training set) the model was fit on. 
+
+```{r}
+model_types = c('rf', 'rfBoruta', 'logreg', 'logregBoruta', 
+                'elnet', 'elnetBoruta', 'gbm', 'gbmBoruta', 
+                'knn', 'knnBoruta', 'svmLinear', 'svmLinearBoruta',
+                'svmPoly', 'svmPolyBoruta','svmRadial', 'svmRadialBoruta')
+```
+
+```{r predict}
+# initialize prediction table
+test_preds = data.frame(matrix(nrow = 0, ncol = length(model_types) + 3))
+
+# scaled test set for knn prediction
+test_scale <- test %>% 
+  mutate(across(where(is.numeric), function (x) scale(x)))
+
+for (i in 1:4) {
+  # create table for the model predictions for one set
+  set_preds <- test %>%
+    select(sub_id, sa, si)
+  
+  # make predictions with each specified model on the test set
+  for (mod_type in model_types) {
+  
+    filename = paste0("models/", mod_type, "_", as.character(i))
+    model <- readRDS(filename)
+  
+    if (str_detect(mod_type, 'knn')) {
+      both_pred <- predict(model, test_scale, type = "prob")
+      pred <- both_pred[,2]
+    }
+    else if (str_detect(mod_type, 'gbm|logreg')) {
+      pred <- predict(model, test, type = 'response')
+    } 
+    else if (str_detect(mod_type, 'svm')) {
+      pred <- predict(model, test)
+    }
+    else {
+      both_pred <- predict(model, test, type = "prob")
+      pred <- both_pred[,2]
+    }
+  
+    column_name = paste0(mod_type, "_", "pred")
+    set_preds[column_name] = pred
+  }
+  # specify the training set
+  set_preds['fold'] = i
+  
+  # append set predictions to full table
+  test_preds <- rbind(test_preds, set_preds)
+}
+```
+
+```{r}
+head(test_preds)
+```
+
+Note that the SVMs will only predict the outcome while the other methods will predict the **probability** of the outcome being 1. Having the probabilities will make things easier since we're working with an imbalanced dataset.
+
+### Performance Metrics
+
+First, we find the optimal probability cutoff points for each model using Youden's J statistic, which is defined as 
+$$J = sensitivity + specificity - 1$$
+
+```{r}
+# use cutpointr to calculate cutoff for every model
+cutoffs <- test_preds %>%
+  summarise(across(rf_pred:knnBoruta_pred, 
+                   ~cutpointr(., si, metric = youden) %>% 
+                     pull(optimal_cutpoint)))
+cutoffs %>%
+  pivot_longer(everything(), names_to = 'model', values_to =  'cutoff') %>%
+  mutate(model = str_replace(model, '_pred',''))
+```
+
+The table above shows the average cutoff for each model type across all 4 training sets.
+
+To get the predicted outcomes, we set the values in each column to equal 1 (having SI) if the probability is greater than the model type's average cutoff value. After we have the outcomes, we classify each prediction as being correct (1) or incorrect (0) based on what the true value is. 
+
+```{r}
+# classify data point as SI if probability is above model's cutoff
+test_results <- test_preds %>%
+  mutate(across(rf_pred:knnBoruta_pred, 
+                ~as.numeric(. >= cutoffs %>% select(.) %>% pull())))
+
+# classify prediction as 1 for correct or 0 for incorrect
+correct <- test_results %>%
+  mutate(across(rf_pred:svmRadialBoruta_pred, 
+                function (x) as.numeric(x == si)))
+```
+
+Below we will look at the overall accuracy:
+```{r}
+correct %>%
+  #group_by(fold) %>%
+  summarize(across(rf_pred:svmRadialBoruta_pred, mean)) %>%
+  pivot_longer(everything(), names_to = 'model', values_to =  'accuracy rate') %>%
+  mutate(model = str_replace(model, '_pred','')) %>%
+  arrange(desc(`accuracy rate`))
+```
+The accuracy rates would be higher if we predicted less SI, but because it is more important that we capture people who have SI, we sacrifice the overall accuracy rate to increase the sensitivity.
+
+Next, we will look at the sensitivity and specificity for each model.
+```{r}
+# calculate proportion correct grouped by true value
+sens_spec <- correct %>%
+  group_by(si) %>%
+  summarize(across(rf_pred:svmRadialBoruta_pred, mean)) %>%
+  mutate(across(rf_pred:svmRadialBoruta_pred, function (x) round(x,3)))
+
+# make table into long format and rename values
+sens_spec2 <- sens_spec %>%
+  pivot_longer(rf_pred:svmRadialBoruta_pred, names_to = 'model') %>%
+  rename(metric = si) %>%
+  mutate(metric = case_when(metric == '1' ~ 'sensitivity',
+                            metric == '0' ~ 'specificity')) %>%
+  mutate(model = str_replace(model, '_pred',''))
+
+# print table
+#sens_spec2 %>%
+#  pivot_wider(names_from = metric, values_from = value) %>%
+#  arrange(desc(sensitivity))
+```
+
+```{r}
+# add column to sort bars by
+sens_spec3 <- left_join(sens_spec2, sens_spec2 %>% filter(metric == 'sensitivity') %>% select(-metric), 'model')
+
+# graph sensitivity and specificity by model
+ggplot(data = sens_spec3, mapping = aes(x = value.x, y = fct_reorder(model, value.y), fill = metric)) +
+  geom_col(position = 'dodge') +
+  labs(x = 'accuracy rate', y = 'model')
+```
+We can see here that there tends to be a trade-off between the sensitivity and specificity rate across the models. Selecting the model at this point would be a question of what is the minimum sensitivity or specificity that we can accept.
+
+```{r}
+# plot overall sensitivity and specificity
+ggplot(data = sens_spec3, mapping = aes(x = value.x, y = metric, fill = metric)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(x = 'accuracy rate')
+```
+Above, we visualize the overall specificity and sensitivity distribution for our models. The median sensitivity appears to be around 0.725 while the median specificity appears to be around 0.665.
+
+Next, we look a the AUC (area under curve) values as an overall metric of how effective each model is in respect to the sensitivity-specificity trade-off.
+
+```{r}
+# table for AUC values
+test_preds %>%
+  summarize(across(rf_pred:knnBoruta_pred, ~pROC::auc(si,.))) %>%
+  t() %>% as.data.frame() %>% 
+  rownames_to_column("model") %>%
+  mutate(model = str_replace(model,'_pred', '')) %>%
+  rename(AUC = V1) %>%
+  arrange(desc(AUC))
+```
+
+Here we see that our best model is the logistic regression with an AUC of 0.780. However, the AUC for the elastic net using only the Boruta-selected set of predictors is pretty similar (0.775), so for parity we may prefer to use the elastic net on the Boruta set in practice. Other than the KNN models, all of the AUCs are not too different and would therefore be valid choices for the final model. It all depends on how you justify it in terms of parity, overall accuracy, sensitivity, and specificity.
+
+Finally, for exploratory purposes, we can also take a look at how the AUC changes when we're distinguishing concomitant SI/SA from controls (no SI). 
+
+```{r}
+#filter just concomitant SI/SA and controls
+test_preds2 <- test_preds %>%
+  filter(! (si == 1 & sa == 0))
+
+# recalculate AUCs
+test_preds2 %>%
+  summarize(across(rf_pred:knnBoruta_pred, ~pROC::auc(si,.))) %>%
+  t() %>% as.data.frame() %>% 
+  rownames_to_column("model") %>%
+  mutate(model = str_replace(model,'_pred', '')) %>%
+  rename(AUC = V1) %>%
+  arrange(desc(AUC))
+```
+
+We can see that as we might expect, the AUC scores are higher when predicting concomitant SI/SA from controls. This indicates that people that have had SI and SA are more distinct from controls than people with SI but no SA. From a SA prevention standpoint, this is good because it means the model will accurately capture a large proportion of people who have had SA.
