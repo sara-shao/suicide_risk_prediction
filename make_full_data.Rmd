@@ -41,7 +41,8 @@ full_df$kbi_y_trans_id[full_df$kbi_y_trans_id > 3] = NA
 ```
 
 ```{r}
-full_df
+full_df %>%
+  count(eventname)
 ```
 
 ```{r}

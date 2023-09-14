@@ -16,7 +16,7 @@ library(tidyverse)
 ### ERQ
 
 ```{r}
-y_erq = read_csv("mental-health/mh_y_erq.csv")
+y_erq = read_csv("mental-health/main/mh_y_erq.csv")
 ```
 
 ```{r}
@@ -29,7 +29,7 @@ y_erq <- y_erq %>%
 ### UPPS
 
 ```{r}
-y_upps <- read_csv("mental-health/mh_y_upps.csv")
+y_upps <- read_csv("mental-health/main/mh_y_upps.csv")
 ```
 
 ```{r}
@@ -40,7 +40,7 @@ y_upps <- y_upps %>%
 ### PPS
 
 ```{r}
-y_pps <- read_csv("mental-health/mh_y_pps.csv")
+y_pps <- read_csv("mental-health/main/mh_y_pps.csv")
 ```
 
 ```{r}
@@ -54,7 +54,7 @@ y_pps <- y_pps %>%
 ### BISBAS
 
 ```{r}
-y_bisbas <- read_csv("mental-health/mh_y_bisbas.csv")
+y_bisbas <- read_csv("mental-health/main/mh_y_bisbas.csv")
 ```
 
 ```{r}
@@ -65,7 +65,7 @@ y_bisbas <- y_bisbas %>%
 ### EATQ
 
 ```{r}
-p_eatq <- read_csv("mental-health/mh_p_eatq.csv")
+p_eatq <- read_csv("mental-health/main/mh_p_eatq.csv")
 ```
 
 ```{r}
@@ -80,7 +80,7 @@ p_eatq <- p_eatq %>%
 # T BPM
 
 ```{r}
-t_bpm <- read_csv("mental-health/mh_t_bpm.csv")
+t_bpm <- read_csv("mental-health/main/mh_t_bpm.csv")
 ```
 
 ```{r}
@@ -93,7 +93,7 @@ t_bpm <- t_bpm %>%
 ### Y BPM
 
 ```{r}
-y_bpm <- read_csv("mental-health/mh_y_bpm.csv")
+y_bpm <- read_csv("mental-health/main/mh_y_bpm.csv")
 ```
 
 ```{r}
@@ -106,7 +106,7 @@ y_bpm <- y_bpm %>%
 ### CBB
 
 ```{r}
-y_cbb <- read_csv("mental-health/mh_y_cbb.csv")
+y_cbb <- read_csv("mental-health/main/mh_y_cbb.csv")
 ```
 
 ```{r}
@@ -117,7 +117,7 @@ y_cbb <- y_cbb %>%
 ### KSADS BG
 
 ```{r}
-y_ksads_bg <- read_csv("mental-health/mh_y_ksads_bg.csv")
+y_ksads_bg <- read_csv("mental-health/main/mh_y_ksads_bg.csv")
 ```
 
 ```{r}
@@ -128,7 +128,7 @@ y_ksads_bg <- y_ksads_bg %>%
 ### OR
 
 ```{r}
-y_or <- read_csv("mental-health/mh_y_or.csv")
+y_or <- read_csv("mental-health/main/mh_y_or.csv")
 ```
 
 ```{r}
@@ -141,7 +141,7 @@ y_or <- y_or %>%
 ### PEQ
 
 ```{r}
-y_peq <- read_csv("mental-health/mh_y_peq.csv")
+y_peq <- read_csv("mental-health/main/mh_y_peq.csv")
 ```
 
 ```{r}
@@ -154,7 +154,7 @@ y_peq <- y_peq %>%
 ### POA
 
 ```{r}
-y_poa <- read_csv("mental-health/mh_y_poa.csv")
+y_poa <- read_csv("mental-health/main/mh_y_poa.csv")
 ```
 
 ```{r}
@@ -165,7 +165,7 @@ y_poa <- y_poa %>%
 ### DERS
 
 ```{r}
-p_ders <- read_csv("mental-health/mh_p_ders.csv")
+p_ders <- read_csv("mental-health/main/mh_p_ders.csv")
 ```
 
 ```{r}

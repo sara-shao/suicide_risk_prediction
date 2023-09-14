@@ -16,11 +16,10 @@ library(tidyverse)
 ## Clean parent report
 
 ```{r}
-parent_si <- read_csv("mental-health/mh_p_ksads_si.csv")
-```
+parent_si <- read_csv("mental-health/ksads/mh_p_ksads_si.csv")
 
-```{r}
-head(parent_si)
+parent_si %>%
+  count(eventname)
 ```
 
 ```{r}
@@ -69,7 +68,10 @@ parent_si4 %>%
 ## Repeat process for youth report:
 
 ```{r}
-youth_si <- read_csv("mental-health/mh_y_ksads_si.csv")
+youth_si <- read_csv("mental-health/ksads/mh_y_ksads_si.csv")
+
+youth_si %>%
+  count(eventname)
 ```
 
 ```{r}
@@ -147,3 +149,39 @@ suicide_risk2 <- full_join(youth_si5, parent_si5, by = c('src_subject_id', 'even
 write.csv(suicide_risk2, "suicide_risk2.csv", row.names = FALSE)
 ```
 
+## Yearly
+
+```{r}
+num_events <- suicide_risk %>%
+  group_by(src_subject_id) %>%
+  count()
+```
+
+```{r}
+ggplot(data = num_events, mapping = aes(x = n)) +
+  geom_histogram(binwidth = 1)
+```
+
+
+
+```{r}
+suicide_risk2 %>%
+  filter(src_subject_id == "NDAR_INV109GUWFN")
+```
+
+## Recent ideation
+
+```{r}
+si_y <- as.character(c(1112,1118,1125,1126,1109,823,827,830,1105))
+sa_y <- as.character(c(1112,1125,1126,1109,830,1105))
+```
+
+```{r}
+parent_si %>%
+  select(src_subject_id, eventname, contains(si_y))
+```
+
+```{r}
+youth_si %>%
+  select(src_subject_id, eventname, contains(si_y))
+```
